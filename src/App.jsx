@@ -228,6 +228,40 @@ function routineIcon(name) {
 }
 
 const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const NOTEPAD_LINE = 40;
+
+function normalizeResetDays(routine) {
+  if (Array.isArray(routine.resetDays) && routine.resetDays.length > 0) {
+    const unique = [...new Set(routine.resetDays.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))];
+    unique.sort((a, b) => a - b);
+    if (unique.length > 0) return unique;
+  }
+  const fallback = Number.isInteger(routine.resetDay) ? routine.resetDay : 1;
+  return [fallback];
+}
+
+function toggleDayInList(days, idx) {
+  const has = days.includes(idx);
+  if (has) {
+    const next = days.filter((d) => d !== idx);
+    return next.length ? next : days;
+  }
+  return [...days, idx].sort((a, b) => a - b);
+}
+
+function routineScheduleText(routine) {
+  const freq = routine.frequency || "daily";
+  if (freq === "daily") return "Resets daily";
+  const days = normalizeResetDays(routine);
+  return `Resets ${days.map((d) => DOW_LABELS[d]).join(" · ")}`;
+}
+
+function routineDueForReset(routine, now, nowDow) {
+  const freq = routine.frequency || "daily";
+  if (routine.lastResetDate === now) return false;
+  if (freq === "daily") return true;
+  return normalizeResetDays(routine).includes(nowDow);
+}
 
 const DEFAULT_ROUTINES = [
   {
@@ -241,6 +275,7 @@ const DEFAULT_ROUTINES = [
     lastResetDate: todayStr(),
     frequency: "daily",
     resetDay: 1,
+    resetDays: [1],
   },
   {
     id: uid(),
@@ -253,6 +288,7 @@ const DEFAULT_ROUTINES = [
     lastResetDate: todayStr(),
     frequency: "daily",
     resetDay: 1,
+    resetDays: [1],
   },
 ];
 
@@ -263,6 +299,7 @@ export default function App() {
 
   const [today, setToday] = useState({ date: todayStr(), items: [] });
   const [weekly, setWeekly] = useState({ date: todayStr(), resetDay: 1, items: [] });
+  const [permanent, setPermanent] = useState({ items: [] });
   const [lists, setLists] = useState([]);
   const [routines, setRoutines] = useState(DEFAULT_ROUTINES);
   const [log, setLog] = useState([]);
@@ -272,11 +309,13 @@ export default function App() {
     ready,
     today,
     weekly,
+    permanent,
     lists,
     routines,
     log,
     setToday,
     setWeekly,
+    setPermanent,
     setLists,
     setRoutines,
     setLog,
@@ -284,9 +323,10 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [t, w, l, r, g] = await Promise.all([
+      const [t, w, p, l, r, g] = await Promise.all([
         loadKey("kept:today", { date: todayStr(), items: [] }),
         loadKey("kept:weekly", { date: todayStr(), resetDay: 1, items: [] }),
+        loadKey("kept:permanent", { items: [] }),
         loadKey("kept:lists", []),
         loadKey("kept:routines", DEFAULT_ROUTINES),
         loadKey("kept:log", []),
@@ -342,25 +382,26 @@ export default function App() {
 
       // Routines just reset their checkmarks — they are kept, not dated,
       // and only reach the Logbook if the person archives one. Daily
-      // routines reset any new day; weekly ones only reset on their
-      // chosen day of the week.
+      // routines reset any new day; weekly ones reset on each selected
+      // weekday, at most once per calendar day.
       const nextRoutines = r.map((routine) => {
-        const freq = routine.frequency || "daily";
-        const dueForReset =
-          routine.lastResetDate !== now &&
-          (freq === "daily" || (freq === "weekly" && nowDow === (routine.resetDay ?? 1)));
-        if (dueForReset) {
+        const days = normalizeResetDays(routine);
+        const migrated = { ...routine, resetDays: days, resetDay: days[0] };
+        if (routineDueForReset(migrated, now, nowDow)) {
           return {
-            ...routine,
-            items: routine.items.map((i) => ({ ...i, done: false })),
+            ...migrated,
+            items: migrated.items.map((i) => ({ ...i, done: false })),
             lastResetDate: now,
           };
         }
-        return routine;
+        return migrated;
       });
+
+      const nextPermanent = p && Array.isArray(p.items) ? p : { items: [] };
 
       setToday(nextToday);
       setWeekly(nextWeekly);
+      setPermanent(nextPermanent);
       setLists(l);
       setRoutines(nextRoutines);
       setLog(newLog);
@@ -368,12 +409,13 @@ export default function App() {
 
       saveKey("kept:today", nextToday);
       saveKey("kept:weekly", nextWeekly);
+      saveKey("kept:permanent", nextPermanent);
       saveKey("kept:routines", nextRoutines);
       if (newLog.length !== g.length) saveKey("kept:log", newLog);
     })();
   }, []);
 
-  const skipFirst = useRef({ today: true, weekly: true, lists: true, routines: true, log: true });
+  const skipFirst = useRef({ today: true, weekly: true, permanent: true, lists: true, routines: true, log: true });
   useEffect(() => {
     if (!ready) return;
     if (skipFirst.current.today) { skipFirst.current.today = false; return; }
@@ -384,6 +426,11 @@ export default function App() {
     if (skipFirst.current.weekly) { skipFirst.current.weekly = false; return; }
     saveKey("kept:weekly", weekly);
   }, [weekly, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    if (skipFirst.current.permanent) { skipFirst.current.permanent = false; return; }
+    saveKey("kept:permanent", permanent);
+  }, [permanent, ready]);
   useEffect(() => {
     if (!ready) return;
     if (skipFirst.current.lists) { skipFirst.current.lists = false; return; }
@@ -489,6 +536,42 @@ export default function App() {
     setWeekly((w) => ({ ...w, resetDay: day }));
   };
 
+  /* ---------------- permanent checklist actions ---------------- */
+  const addPermanentItem = (text) => {
+    if (!text.trim()) return;
+    setPermanent((p) => ({ ...p, items: [...p.items, { id: uid(), text: text.trim(), done: false }] }));
+  };
+  const togglePermanentItem = (id) => {
+    setPermanent((p) => ({ ...p, items: p.items.map((i) => (i.id === id ? { ...i, done: !i.done } : i)) }));
+  };
+  const deletePermanentItem = (id) => {
+    setPermanent((p) => ({ ...p, items: p.items.filter((i) => i.id !== id) }));
+  };
+  const editPermanentItemText = (id, text) => {
+    setPermanent((p) => ({ ...p, items: p.items.map((i) => (i.id === id ? { ...i, text } : i)) }));
+  };
+  const archivePermanent = () => {
+    if (permanent.items.length === 0) return;
+    setLog((g) => [
+      {
+        id: uid(),
+        date: todayStr(),
+        type: "permanent",
+        title: "Permanent Checklist",
+        total: permanent.items.length,
+        completed: permanent.items.filter((i) => i.done).length,
+        items: permanent.items,
+        closedAt: Date.now(),
+      },
+      ...g,
+    ]);
+  };
+  const bulkAddPermanentItems = (text) => {
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    setPermanent((p) => ({ ...p, items: [...p.items, ...lines.map((l) => ({ id: uid(), text: l, done: false }))] }));
+  };
+
   /* ---------------- list actions ---------------- */
   const createList = (name, category) => {
     if (!name.trim()) return;
@@ -555,12 +638,27 @@ export default function App() {
   };
 
   /* ---------------- routine actions ---------------- */
-  const createRoutine = (name, frequency = "daily", resetDay = 1) => {
+  const createRoutine = (name, frequency = "daily", resetDays = [1]) => {
     if (!name.trim()) return;
-    setRoutines((rs) => [...rs, { id: uid(), name: name.trim(), items: [], lastResetDate: todayStr(), frequency, resetDay }]);
+    const days = Array.isArray(resetDays) && resetDays.length ? resetDays : [1];
+    setRoutines((rs) => [
+      ...rs,
+      {
+        id: uid(),
+        name: name.trim(),
+        items: [],
+        lastResetDate: todayStr(),
+        frequency,
+        resetDays: days,
+        resetDay: days[0],
+      },
+    ]);
   };
-  const editRoutineSchedule = (routineId, frequency, resetDay) => {
-    setRoutines((rs) => rs.map((r) => (r.id === routineId ? { ...r, frequency, resetDay } : r)));
+  const editRoutineSchedule = (routineId, frequency, resetDays) => {
+    const days = Array.isArray(resetDays) && resetDays.length ? resetDays : [1];
+    setRoutines((rs) =>
+      rs.map((r) => (r.id === routineId ? { ...r, frequency, resetDays: days, resetDay: days[0] } : r))
+    );
   };
   const addRoutineItem = (routineId, text) => {
     if (!text.trim()) return;
@@ -672,6 +770,13 @@ export default function App() {
             archiveWeekly={archiveWeekly}
             bulkAddWeeklyItems={bulkAddWeeklyItems}
             editWeeklyResetDay={editWeeklyResetDay}
+            permanent={permanent}
+            addPermanentItem={addPermanentItem}
+            togglePermanentItem={togglePermanentItem}
+            deletePermanentItem={deletePermanentItem}
+            editPermanentItemText={editPermanentItemText}
+            archivePermanent={archivePermanent}
+            bulkAddPermanentItems={bulkAddPermanentItems}
           />
         )}
         {view === "lists" && (
@@ -1011,7 +1116,7 @@ function AddRow({ placeholder, onAdd, accent, buttonLabel }) {
           border: "1px solid var(--line)",
           borderRadius: 12,
           background: "#fff",
-          fontSize: 15,
+          fontSize: 16,
           fontFamily: "var(--font-body)",
           color: "var(--ink)",
         }}
@@ -1118,7 +1223,7 @@ function HomeView({ setView, today, lists, routines, log, cloud, onOpenSync }) {
       icon: ListChecks,
       accent: "blue",
       title: "Today",
-      desc: "A fresh checklist for whatever's in front of you. Archive it into the logbook when you're done.",
+      desc: "Daily, weekly, and a permanent list that stays until you change it. Archive snapshots into the logbook.",
       stat: totalToday ? `${doneToday}/${totalToday} done` : "Nothing added yet",
     },
     {
@@ -1134,7 +1239,7 @@ function HomeView({ setView, today, lists, routines, log, cloud, onOpenSync }) {
       icon: Repeat,
       accent: "sage",
       title: "Routines",
-      desc: "Morning, night, workout — checklists that reset every day but keep their shape until you edit them.",
+      desc: "Morning, night, workout — checklists that reset on the days you pick but keep their steps until you edit them.",
       stat: `${routines.length} routine${routines.length === 1 ? "" : "s"}`,
     },
     {
@@ -1309,10 +1414,28 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
   const c = ACCENTS[accent];
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(text);
+  const editRef = useRef(null);
+  const textRef = useRef(null);
 
   useEffect(() => {
     if (!editing) setVal(text);
   }, [text, editing]);
+
+  useEffect(() => {
+    if (!editing || !editRef.current) return;
+    const el = editRef.current;
+    el.style.height = "auto";
+    const lines = Math.max(1, Math.round(el.scrollHeight / NOTEPAD_LINE) || 1);
+    el.style.height = `${lines * NOTEPAD_LINE}px`;
+  }, [editing, val]);
+
+  useEffect(() => {
+    if (editing || !textRef.current) return;
+    const el = textRef.current;
+    el.style.height = "auto";
+    const lines = Math.max(1, Math.round(el.scrollHeight / NOTEPAD_LINE) || 1);
+    el.style.minHeight = `${lines * NOTEPAD_LINE}px`;
+  }, [editing, text]);
 
   const commit = () => {
     setEditing(false);
@@ -1324,8 +1447,10 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
     }
   };
 
+  const controlNudge = { marginTop: 10, flexShrink: 0 };
+
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, padding: "0 12px 0 44px" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minHeight: NOTEPAD_LINE, padding: "0 12px 0 44px" }}>
       <button
         onClick={onToggle}
         aria-label={done ? "Mark as not done" : "Mark as done"}
@@ -1333,6 +1458,7 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
           width: 19,
           height: 19,
           flexShrink: 0,
+          marginTop: 10.5,
           border: `2px solid ${done ? c.deep : "#C9BFAF"}`,
           borderRadius: 6,
           background: done ? c.deep : "transparent",
@@ -1344,36 +1470,57 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
         {done && <Check size={12} color="#FBF9F4" strokeWidth={3} />}
       </button>
       {editing ? (
-        <input
+        <textarea
+          ref={editRef}
           autoFocus
+          rows={1}
           value={val}
           onChange={(e) => setVal(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") commit();
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              commit();
+            }
             if (e.key === "Escape") { setVal(text); setEditing(false); }
           }}
           onBlur={commit}
           style={{
             flex: 1,
+            minWidth: 0,
             border: "none",
             outline: "none",
             background: "transparent",
             fontFamily: "var(--font-body)",
-            fontSize: 15.5,
+            fontSize: 16,
+            lineHeight: `${NOTEPAD_LINE}px`,
             color: "var(--ink)",
             padding: 0,
+            margin: 0,
+            resize: "none",
+            overflow: "hidden",
+            minHeight: NOTEPAD_LINE,
+            display: "block",
+            boxSizing: "border-box",
           }}
         />
       ) : (
         <span
+          ref={textRef}
           onClick={() => onEdit && setEditing(true)}
           style={{
             flex: 1,
+            minWidth: 0,
+            display: "block",
             fontFamily: "var(--font-body)",
             fontSize: 15.5,
+            lineHeight: `${NOTEPAD_LINE}px`,
+            minHeight: NOTEPAD_LINE,
             color: done ? "var(--ink-soft)" : "var(--ink)",
             textDecoration: done ? "line-through" : "none",
             cursor: onEdit ? "text" : "default",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+            whiteSpace: "pre-wrap",
           }}
         >
           {text}
@@ -1384,12 +1531,12 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
           onClick={onToggleFlag}
           aria-label={flagged ? "Unmark as today-only" : "Mark as today-only (won't carry over)"}
           title={flagged ? "Today-only — won't carry over if unfinished" : "Mark as today-only"}
-          style={{ border: "none", background: "none", color: flagged ? c.deep : "#D3CCC2", padding: 4 }}
+          style={{ border: "none", background: "none", color: flagged ? c.deep : "#D3CCC2", padding: 4, ...controlNudge }}
         >
           <Pin size={14} fill={flagged ? c.deep : "none"} />
         </button>
       )}
-      <button onClick={onDelete} aria-label="Delete item" style={{ border: "none", background: "none", color: "#C7BFB4", padding: 4 }}>
+      <button onClick={onDelete} aria-label="Delete item" style={{ border: "none", background: "none", color: "#C7BFB4", padding: 4, ...controlNudge }}>
         <X size={14} />
       </button>
     </div>
@@ -1419,7 +1566,7 @@ function NotepadAddLine({ placeholder, onAdd, accent }) {
           outline: "none",
           background: "transparent",
           fontFamily: "var(--font-body)",
-          fontSize: 15.5,
+          fontSize: 16,
           color: "var(--ink)",
           padding: 0,
         }}
@@ -1503,7 +1650,7 @@ function BulkAddPanel({ accent, onAdd, placeholder }) {
           borderRadius: 10,
           padding: "10px 12px",
           fontFamily: "var(--font-body)",
-          fontSize: 14.5,
+          fontSize: 16,
           color: "var(--ink)",
           background: "#fff",
           resize: "vertical",
@@ -1547,6 +1694,13 @@ function TodayView({
   archiveWeekly,
   bulkAddWeeklyItems,
   editWeeklyResetDay,
+  permanent,
+  addPermanentItem,
+  togglePermanentItem,
+  deletePermanentItem,
+  editPermanentItemText,
+  archivePermanent,
+  bulkAddPermanentItems,
 }) {
   const [mode, setMode] = useState("daily");
   const [dayPickerOpen, setDayPickerOpen] = useState(false);
@@ -1555,25 +1709,35 @@ function TodayView({
   const done = today.items.filter((i) => i.done).length;
   const wTotal = weekly.items.length;
   const wDone = weekly.items.filter((i) => i.done).length;
+  const pTotal = permanent.items.length;
+  const pDone = permanent.items.filter((i) => i.done).length;
+
+  const header =
+    mode === "daily"
+      ? { eyebrow: prettyDate(today.date), title: "Today's List" }
+      : mode === "weekly"
+        ? { eyebrow: "This week", title: "Weekly Checklist" }
+        : { eyebrow: "Always on", title: "Permanent List" };
 
   return (
     <div>
-      <SectionHeader eyebrow={mode === "daily" ? prettyDate(today.date) : "This week"} title={mode === "daily" ? "Today's List" : "Weekly Checklist"} accent="blue" />
+      <SectionHeader eyebrow={header.eyebrow} title={header.title} accent="blue" />
 
-      <div style={{ display: "flex", gap: 6, marginTop: -10, marginBottom: 16 }}>
-        {[{ key: "daily", label: "Daily" }, { key: "weekly", label: "Weekly" }].map((m) => (
+      <div style={{ display: "flex", gap: 5, marginTop: -10, marginBottom: 16 }}>
+        {[{ key: "daily", label: "Daily" }, { key: "weekly", label: "Weekly" }, { key: "permanent", label: "Permanent" }].map((m) => (
           <button
             key={m.key}
             onClick={() => setMode(m.key)}
             style={{
               flex: 1,
+              minWidth: 0,
               border: "none",
               borderRadius: 10,
-              padding: "9px",
+              padding: "8px 4px",
               background: mode === m.key ? ACCENTS.blue.deep : "var(--tint)",
               color: mode === m.key ? "#FBF9F4" : "var(--ink-soft)",
               fontFamily: "var(--font-label)",
-              fontSize: 12.5,
+              fontSize: 12,
               fontWeight: 700,
             }}
           >
@@ -1582,7 +1746,7 @@ function TodayView({
         ))}
       </div>
 
-      {mode === "daily" ? (
+      {mode === "daily" && (
         <>
           <Notepad accent="blue">
             {today.items.length === 0 && (
@@ -1625,7 +1789,9 @@ function TodayView({
             next time you open Kept on a new day.
           </p>
         </>
-      ) : (
+      )}
+
+      {mode === "weekly" && (
         <>
           <button
             onClick={() => setDayPickerOpen((o) => !o)}
@@ -1706,6 +1872,47 @@ function TodayView({
           <p style={{ color: "var(--ink-soft)", fontSize: 12.5, marginTop: 12, lineHeight: 1.5 }}>
             Works just like the daily list, but it only resets once a week, on the day you pick
             above. Unfinished tasks carry into next week unless you pin them as this-week-only.
+          </p>
+        </>
+      )}
+
+      {mode === "permanent" && (
+        <>
+          <Notepad accent="blue">
+            {permanent.items.length === 0 && (
+              <div style={{ height: 40, display: "flex", alignItems: "center", padding: "0 12px 0 44px" }}>
+                <span style={{ fontFamily: "var(--font-body)", fontSize: 14, color: "var(--ink-soft)", fontStyle: "italic" }}>
+                  Nothing here yet — start writing below.
+                </span>
+              </div>
+            )}
+            {permanent.items.map((item) => (
+              <NotepadLineRow
+                key={item.id}
+                text={item.text}
+                done={item.done}
+                accent="blue"
+                onToggle={() => togglePermanentItem(item.id)}
+                onDelete={() => deletePermanentItem(item.id)}
+                onEdit={(t) => editPermanentItemText(item.id, t)}
+              />
+            ))}
+            <NotepadAddLine placeholder="Add a task…" onAdd={addPermanentItem} accent="blue" />
+          </Notepad>
+
+          <BulkAddPanel accent="blue" onAdd={bulkAddPermanentItems} placeholder={"One task per line…\ne.g.\nPassport renewal\nReplace furnace filter\nCall insurance"} />
+
+          {pTotal > 0 && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16 }}>
+              <span style={{ fontFamily: "var(--font-label)", fontSize: 12.5, fontWeight: 600, color: "var(--ink-soft)" }}>
+                {pDone}/{pTotal} done
+              </span>
+              <ArchiveButton onClick={archivePermanent} accent="blue" label="Archive" />
+            </div>
+          )}
+          <p style={{ color: "var(--ink-soft)", fontSize: 12.5, marginTop: 12, lineHeight: 1.5 }}>
+            This list never resets on its own. Items stay until you check, uncheck, or delete them.
+            Archive copies a snapshot into the Logbook without clearing the list.
           </p>
         </>
       )}
@@ -1837,7 +2044,7 @@ function ListsView({ lists, createList, addListItem, bulkAddListItems, toggleLis
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submitNew()}
               placeholder="List name, e.g. Beach Trip Packing"
-              style={{ flex: 1, padding: "11px 13px", border: "1px solid var(--line)", borderRadius: 12, fontSize: 15, fontFamily: "var(--font-body)", background: "#fff" }}
+              style={{ flex: 1, padding: "11px 13px", border: "1px solid var(--line)", borderRadius: 12, fontSize: 16, fontFamily: "var(--font-body)", background: "#fff" }}
             />
             <button onClick={submitNew} style={{ padding: "0 15px", border: "none", borderRadius: 12, background: ACCENTS.rose.deep, color: "#FBF9F4", fontFamily: "var(--font-label)", fontSize: 13, fontWeight: 700 }}>
               Create
@@ -1858,9 +2065,38 @@ function ListsView({ lists, createList, addListItem, bulkAddListItems, toggleLis
 
 /* ================= Routines ================= */
 
+function DayToggleRow({ selected, onToggle, accent, filledBg }) {
+  const c = ACCENTS[accent];
+  const offBg = filledBg || "var(--tint)";
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+      {DOW_LABELS.map((label, idx) => {
+        const on = selected.includes(idx);
+        return (
+          <button
+            key={label}
+            onClick={() => onToggle(idx)}
+            style={{
+              flex: "1 0 12%",
+              border: "none",
+              borderRadius: 8,
+              padding: "7px 4px",
+              background: on ? c.deep : offBg,
+              color: on ? "#FBF9F4" : "var(--ink-soft)",
+              fontFamily: "var(--font-label)",
+              fontSize: 10.5,
+              fontWeight: 700,
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ScheduleLabel({ routine, onClick }) {
-  const freq = routine.frequency || "daily";
-  const text = freq === "weekly" ? `Weekly · resets ${DOW_LABELS[routine.resetDay ?? 1]}` : "Resets daily";
   return (
     <button
       onClick={onClick}
@@ -1877,18 +2113,18 @@ function ScheduleLabel({ routine, onClick }) {
         textUnderlineOffset: 3,
       }}
     >
-      {text}
+      {routineScheduleText(routine)}
     </button>
   );
 }
 
 function ScheduleEditor({ routine, onSave, onClose }) {
   const [freq, setFreq] = useState(routine.frequency || "daily");
-  const [day, setDay] = useState(routine.resetDay ?? 1);
+  const [days, setDays] = useState(() => normalizeResetDays(routine));
 
   const save = (f, d) => {
     setFreq(f);
-    setDay(d);
+    setDays(d);
     onSave(f, d);
   };
 
@@ -1898,7 +2134,7 @@ function ScheduleEditor({ routine, onSave, onClose }) {
         {["daily", "weekly"].map((f) => (
           <button
             key={f}
-            onClick={() => save(f, day)}
+            onClick={() => save(f, days)}
             style={{
               flex: 1,
               border: "none",
@@ -1917,27 +2153,12 @@ function ScheduleEditor({ routine, onSave, onClose }) {
         ))}
       </div>
       {freq === "weekly" && (
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {DOW_LABELS.map((label, idx) => (
-            <button
-              key={label}
-              onClick={() => save("weekly", idx)}
-              style={{
-                flex: "1 0 12%",
-                border: "none",
-                borderRadius: 7,
-                padding: "6px 4px",
-                background: day === idx ? ACCENTS.sage.deep : "#fff",
-                color: day === idx ? "#FBF9F4" : "var(--ink-soft)",
-                fontFamily: "var(--font-label)",
-                fontSize: 10.5,
-                fontWeight: 700,
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <DayToggleRow
+          selected={days}
+          accent="sage"
+          filledBg="#fff"
+          onToggle={(idx) => save("weekly", toggleDayInList(days, idx))}
+        />
       )}
       <button
         onClick={onClose}
@@ -1953,15 +2174,15 @@ function RoutinesView({ routines, createRoutine, addRoutineItem, bulkAddRoutineI
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
   const [newFreq, setNewFreq] = useState("daily");
-  const [newDay, setNewDay] = useState(1);
+  const [newDays, setNewDays] = useState([1]);
   const [scheduleOpenId, setScheduleOpenId] = useState(null);
 
   const submitNew = () => {
     if (!name.trim()) return;
-    createRoutine(name, newFreq, newDay);
+    createRoutine(name, newFreq, newDays);
     setName("");
     setNewFreq("daily");
-    setNewDay(1);
+    setNewDays([1]);
     setShowNew(false);
   };
 
@@ -1969,8 +2190,8 @@ function RoutinesView({ routines, createRoutine, addRoutineItem, bulkAddRoutineI
     <div>
       <SectionHeader eyebrow="Daily or weekly" title="Routines" accent="sage" />
       <p style={{ color: "var(--ink-soft)", fontSize: 13.5, marginTop: -10, marginBottom: 16, lineHeight: 1.5 }}>
-        Checkboxes clear on schedule — daily, or once a week on a day you pick. The list of steps
-        stays the same until you change it.
+        Checkboxes clear on schedule — every day, or on the weekdays you pick. Tap several days for
+        something like a Tuesday/Thursday workout. The list of steps stays the same until you change it.
       </p>
 
       <div style={{ display: "grid", gap: 12 }}>
@@ -2041,7 +2262,7 @@ function RoutinesView({ routines, createRoutine, addRoutineItem, bulkAddRoutineI
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && submitNew()}
             placeholder="Routine name, e.g. Weekly Work Prep"
-            style={{ width: "100%", padding: "11px 13px", border: "1px solid var(--line)", borderRadius: 12, fontSize: 15, fontFamily: "var(--font-body)", background: "#fff", marginBottom: 10 }}
+            style={{ width: "100%", padding: "11px 13px", border: "1px solid var(--line)", borderRadius: 12, fontSize: 16, fontFamily: "var(--font-body)", background: "#fff", marginBottom: 10 }}
           />
           <div style={{ display: "flex", gap: 6, marginBottom: newFreq === "weekly" ? 8 : 10 }}>
             {["daily", "weekly"].map((f) => (
@@ -2066,26 +2287,12 @@ function RoutinesView({ routines, createRoutine, addRoutineItem, bulkAddRoutineI
             ))}
           </div>
           {newFreq === "weekly" && (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
-              {DOW_LABELS.map((label, idx) => (
-                <button
-                  key={label}
-                  onClick={() => setNewDay(idx)}
-                  style={{
-                    flex: "1 0 12%",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "7px 4px",
-                    background: newDay === idx ? ACCENTS.sage.deep : "var(--tint)",
-                    color: newDay === idx ? "#FBF9F4" : "var(--ink-soft)",
-                    fontFamily: "var(--font-label)",
-                    fontSize: 10.5,
-                    fontWeight: 700,
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+            <div style={{ marginBottom: 10 }}>
+              <DayToggleRow
+                selected={newDays}
+                accent="sage"
+                onToggle={(idx) => setNewDays((d) => toggleDayInList(d, idx))}
+              />
             </div>
           )}
           <button onClick={submitNew} style={{ width: "100%", padding: "11px", border: "none", borderRadius: 12, background: ACCENTS.sage.deep, color: "#FBF9F4", fontFamily: "var(--font-label)", fontSize: 13, fontWeight: 700 }}>
@@ -2203,8 +2410,8 @@ function GuideView({ createListFromTemplate, setView }) {
 function LogView({ log }) {
   const [openId, setOpenId] = useState(null);
   const sorted = [...log].sort((a, b) => (a.date < b.date ? 1 : -1));
-  const typeAccent = { today: "blue", weekly: "blue", list: "rose", routine: "sage" };
-  const typeLabel = { today: "Daily To-Do", weekly: "Weekly Checklist", list: "List", routine: "Routine" };
+  const typeAccent = { today: "blue", weekly: "blue", permanent: "blue", list: "rose", routine: "sage" };
+  const typeLabel = { today: "Daily To-Do", weekly: "Weekly Checklist", permanent: "Permanent Checklist", list: "List", routine: "Routine" };
 
   return (
     <div>
@@ -2238,9 +2445,9 @@ function LogView({ log }) {
                 {open && (
                   <div style={{ padding: "0 15px 15px" }}>
                     {entry.items.map((item, idx) => (
-                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 2px", fontSize: 14, color: item.done ? "var(--ink-soft)" : "var(--ink)", textDecoration: item.done ? "line-through" : "none" }}>
-                        <span style={{ width: 15, height: 15, borderRadius: 5, border: `1.5px solid ${item.done ? c.deep : "#D3CCC2"}`, background: item.done ? c.deep : "transparent", flexShrink: 0 }} />
-                        {item.text}
+                      <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "6px 2px", fontSize: 14, color: item.done ? "var(--ink-soft)" : "var(--ink)", textDecoration: item.done ? "line-through" : "none" }}>
+                        <span style={{ width: 15, height: 15, borderRadius: 5, border: `1.5px solid ${item.done ? c.deep : "#D3CCC2"}`, background: item.done ? c.deep : "transparent", flexShrink: 0, marginTop: 2 }} />
+                        <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }}>{item.text}</span>
                       </div>
                     ))}
                   </div>

@@ -24,10 +24,11 @@ function isNewer(a, b) {
   return new Date(a).getTime() > new Date(b).getTime();
 }
 
-function hasLocalKept(today, weekly, lists, log) {
+function hasLocalKept(today, weekly, lists, log, permanent) {
   return (
     (today?.items && today.items.length > 0) ||
     (weekly?.items && weekly.items.length > 0) ||
+    (permanent?.items && permanent.items.length > 0) ||
     (lists && lists.length > 0) ||
     (log && log.length > 0)
   );
@@ -38,6 +39,7 @@ function remoteHasKept(remote) {
   return (
     (remote.today?.items && remote.today.items.length > 0) ||
     (remote.weekly?.items && remote.weekly.items.length > 0) ||
+    (remote.permanent?.items && remote.permanent.items.length > 0) ||
     (remote.lists && remote.lists.length > 0) ||
     (remote.log && remote.log.length > 0) ||
     (remote.routines && remote.routines.length > 0)
@@ -62,11 +64,13 @@ export function useCloudSync({
   ready,
   today,
   weekly,
+  permanent,
   lists,
   routines,
   log,
   setToday,
   setWeekly,
+  setPermanent,
   setLists,
   setRoutines,
   setLog,
@@ -79,11 +83,11 @@ export function useCloudSync({
   const initialSyncDone = useRef(false);
   const writeTimer = useRef(null);
   const unsubSnap = useRef(null);
-  const latest = useRef({ today, weekly, lists, routines, log });
+  const latest = useRef({ today, weekly, permanent, lists, routines, log });
   const dbRef = useRef(null);
   const authRef = useRef(null);
 
-  latest.current = { today, weekly, lists, routines, log };
+  latest.current = { today, weekly, permanent, lists, routines, log };
 
   useEffect(() => {
     if (!cloudEnabled()) {
@@ -122,6 +126,7 @@ export function useCloudSync({
     applyingRemote.current = true;
     if (remote.today) setToday(remote.today);
     if (remote.weekly) setWeekly(remote.weekly);
+    if (remote.permanent && Array.isArray(remote.permanent.items)) setPermanent(remote.permanent);
     if (Array.isArray(remote.lists)) setLists(remote.lists);
     if (Array.isArray(remote.routines)) setRoutines(remote.routines);
     if (Array.isArray(remote.log)) setLog(remote.log);
@@ -136,10 +141,11 @@ export function useCloudSync({
     writeExportTime(exportedAt);
     return cleanForCloud({
       app: "kept",
-      version: 1,
+      version: 2,
       exportedAt,
       today: latest.current.today,
       weekly: latest.current.weekly,
+      permanent: latest.current.permanent,
       lists: latest.current.lists,
       routines: latest.current.routines,
       log: latest.current.log,
@@ -164,7 +170,7 @@ export function useCloudSync({
         if (cancelled) return;
         const localAt = readExportTime();
         const localData = latest.current;
-        const localExists = hasLocalKept(localData.today, localData.weekly, localData.lists, localData.log);
+        const localExists = hasLocalKept(localData.today, localData.weekly, localData.lists, localData.log, localData.permanent);
 
         if (!snap.exists()) {
           if (localExists || (localData.routines && localData.routines.length)) await pushCloud();
@@ -193,7 +199,8 @@ export function useCloudSync({
             latest.current.today,
             latest.current.weekly,
             latest.current.lists,
-            latest.current.log
+            latest.current.log,
+            latest.current.permanent
           )) return;
           applyRemote(remote);
           setStatus("synced");
@@ -220,7 +227,7 @@ export function useCloudSync({
       pushCloud().catch(() => setStatus("error"));
     }, 700);
     return () => clearTimeout(writeTimer.current);
-  }, [ready, user, today, weekly, lists, routines, log]);
+  }, [ready, user, today, weekly, permanent, lists, routines, log]);
 
   async function signIn(email, password) {
     if (!authRef.current) throw new Error("Cloud sync is not set up yet.");
