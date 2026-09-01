@@ -228,7 +228,17 @@ function routineIcon(name) {
 }
 
 const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const NOTEPAD_LINE = 40;
+
+function notepadRowStyle(accent) {
+  return {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: "8px 12px 8px 44px",
+    borderBottom: `1px solid ${ACCENTS[accent].tint}`,
+    overflow: "visible",
+  };
+}
 
 function normalizeResetDays(routine) {
   if (Array.isArray(routine.resetDays) && routine.resetDays.length > 0) {
@@ -1410,12 +1420,30 @@ function SpiralStrip({ accent }) {
   );
 }
 
+function NotepadEmptyHint({ accent }) {
+  return (
+    <div style={notepadRowStyle(accent)}>
+      <span
+        style={{
+          fontFamily: "var(--font-body)",
+          fontSize: 16,
+          lineHeight: 1.4,
+          color: "var(--ink-soft)",
+          fontStyle: "italic",
+          overflowWrap: "anywhere",
+        }}
+      >
+        Nothing here yet — start writing below.
+      </span>
+    </div>
+  );
+}
+
 function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagged, onToggleFlag }) {
   const c = ACCENTS[accent];
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(text);
   const editRef = useRef(null);
-  const textRef = useRef(null);
 
   useEffect(() => {
     if (!editing) setVal(text);
@@ -1425,17 +1453,8 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
     if (!editing || !editRef.current) return;
     const el = editRef.current;
     el.style.height = "auto";
-    const lines = Math.max(1, Math.round(el.scrollHeight / NOTEPAD_LINE) || 1);
-    el.style.height = `${lines * NOTEPAD_LINE}px`;
+    el.style.height = `${el.scrollHeight}px`;
   }, [editing, val]);
-
-  useEffect(() => {
-    if (editing || !textRef.current) return;
-    const el = textRef.current;
-    el.style.height = "auto";
-    const lines = Math.max(1, Math.round(el.scrollHeight / NOTEPAD_LINE) || 1);
-    el.style.minHeight = `${lines * NOTEPAD_LINE}px`;
-  }, [editing, text]);
 
   const commit = () => {
     setEditing(false);
@@ -1447,10 +1466,10 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
     }
   };
 
-  const controlNudge = { marginTop: 10, flexShrink: 0 };
+  const controlNudge = { marginTop: 1, flexShrink: 0 };
 
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minHeight: NOTEPAD_LINE, padding: "0 12px 0 44px" }}>
+    <div style={notepadRowStyle(accent)}>
       <button
         onClick={onToggle}
         aria-label={done ? "Mark as not done" : "Mark as done"}
@@ -1458,7 +1477,7 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
           width: 19,
           height: 19,
           flexShrink: 0,
-          marginTop: 10.5,
+          marginTop: 1.5,
           border: `2px solid ${done ? c.deep : "#C9BFAF"}`,
           borderRadius: 6,
           background: done ? c.deep : "transparent",
@@ -1492,32 +1511,30 @@ function NotepadLineRow({ text, done, onToggle, onDelete, onEdit, accent, flagge
             background: "transparent",
             fontFamily: "var(--font-body)",
             fontSize: 16,
-            lineHeight: `${NOTEPAD_LINE}px`,
+            lineHeight: 1.4,
             color: "var(--ink)",
             padding: 0,
             margin: 0,
             resize: "none",
             overflow: "hidden",
-            minHeight: NOTEPAD_LINE,
             display: "block",
             boxSizing: "border-box",
           }}
         />
       ) : (
         <span
-          ref={textRef}
           onClick={() => onEdit && setEditing(true)}
           style={{
             flex: 1,
             minWidth: 0,
             display: "block",
             fontFamily: "var(--font-body)",
-            fontSize: 15.5,
-            lineHeight: `${NOTEPAD_LINE}px`,
-            minHeight: NOTEPAD_LINE,
+            fontSize: 16,
+            lineHeight: 1.4,
             color: done ? "var(--ink-soft)" : "var(--ink)",
             textDecoration: done ? "line-through" : "none",
             cursor: onEdit ? "text" : "default",
+            overflow: "visible",
             overflowWrap: "anywhere",
             wordBreak: "break-word",
             whiteSpace: "pre-wrap",
@@ -1552,7 +1569,7 @@ function NotepadAddLine({ placeholder, onAdd, accent }) {
     setVal("");
   };
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, height: 40, padding: "0 12px 0 44px" }}>
+    <div style={{ ...notepadRowStyle(accent), alignItems: "center" }}>
       <Plus size={16} color={c.deep} style={{ flexShrink: 0 }} />
       <input
         value={val}
@@ -1562,11 +1579,13 @@ function NotepadAddLine({ placeholder, onAdd, accent }) {
         placeholder={placeholder}
         style={{
           flex: 1,
+          minWidth: 0,
           border: "none",
           outline: "none",
           background: "transparent",
           fontFamily: "var(--font-body)",
           fontSize: 16,
+          lineHeight: 1.4,
           color: "var(--ink)",
           padding: 0,
         }}
@@ -1575,8 +1594,7 @@ function NotepadAddLine({ placeholder, onAdd, accent }) {
   );
 }
 
-function Notepad({ accent, children, lineCount }) {
-  const c = ACCENTS[accent];
+function Notepad({ accent, children }) {
   return (
     <div
       style={{
@@ -1588,16 +1606,7 @@ function Notepad({ accent, children, lineCount }) {
       }}
     >
       <SpiralStrip accent={accent} />
-      <div
-        style={{
-          position: "relative",
-          paddingTop: 4,
-          paddingBottom: 4,
-          backgroundImage:
-            `repeating-linear-gradient(to bottom, transparent, transparent 39px, ${c.tint} 40px)`,
-          backgroundSize: "100% 40px",
-        }}
-      >
+      <div style={{ position: "relative" }}>
         <div style={{ position: "absolute", top: 0, bottom: 0, left: 30, width: 2, background: "rgba(185,138,138,0.35)" }} />
         {children}
       </div>
@@ -1749,13 +1758,7 @@ function TodayView({
       {mode === "daily" && (
         <>
           <Notepad accent="blue">
-            {today.items.length === 0 && (
-              <div style={{ height: 40, display: "flex", alignItems: "center", padding: "0 12px 0 44px" }}>
-                <span style={{ fontFamily: "var(--font-body)", fontSize: 14, color: "var(--ink-soft)", fontStyle: "italic" }}>
-                  Nothing here yet — start writing below.
-                </span>
-              </div>
-            )}
+            {today.items.length === 0 && <NotepadEmptyHint accent="blue" />}
             {today.items.map((item) => (
               <NotepadLineRow
                 key={item.id}
@@ -1836,13 +1839,7 @@ function TodayView({
           )}
 
           <Notepad accent="blue">
-            {weekly.items.length === 0 && (
-              <div style={{ height: 40, display: "flex", alignItems: "center", padding: "0 12px 0 44px" }}>
-                <span style={{ fontFamily: "var(--font-body)", fontSize: 14, color: "var(--ink-soft)", fontStyle: "italic" }}>
-                  Nothing here yet — start writing below.
-                </span>
-              </div>
-            )}
+            {weekly.items.length === 0 && <NotepadEmptyHint accent="blue" />}
             {weekly.items.map((item) => (
               <NotepadLineRow
                 key={item.id}
@@ -1879,13 +1876,7 @@ function TodayView({
       {mode === "permanent" && (
         <>
           <Notepad accent="blue">
-            {permanent.items.length === 0 && (
-              <div style={{ height: 40, display: "flex", alignItems: "center", padding: "0 12px 0 44px" }}>
-                <span style={{ fontFamily: "var(--font-body)", fontSize: 14, color: "var(--ink-soft)", fontStyle: "italic" }}>
-                  Nothing here yet — start writing below.
-                </span>
-              </div>
-            )}
+            {permanent.items.length === 0 && <NotepadEmptyHint accent="blue" />}
             {permanent.items.map((item) => (
               <NotepadLineRow
                 key={item.id}
@@ -1966,13 +1957,7 @@ function ListsView({ lists, createList, addListItem, bulkAddListItems, toggleLis
               {open && (
                 <div style={{ padding: "0 15px 15px" }}>
                   <Notepad accent="rose">
-                    {l.items.length === 0 && (
-                      <div style={{ height: 40, display: "flex", alignItems: "center", padding: "0 12px 0 44px" }}>
-                        <span style={{ fontFamily: "var(--font-body)", fontSize: 14, color: "var(--ink-soft)", fontStyle: "italic" }}>
-                          Nothing here yet — start writing below.
-                        </span>
-                      </div>
-                    )}
+                    {l.items.length === 0 && <NotepadEmptyHint accent="rose" />}
                     {l.items.map((item) => (
                       <NotepadLineRow
                         key={item.id}
@@ -2219,13 +2204,7 @@ function RoutinesView({ routines, createRoutine, addRoutineItem, bulkAddRoutineI
                 />
               )}
               <Notepad accent="sage">
-                {r.items.length === 0 && (
-                  <div style={{ height: 40, display: "flex", alignItems: "center", padding: "0 12px 0 44px" }}>
-                    <span style={{ fontFamily: "var(--font-body)", fontSize: 14, color: "var(--ink-soft)", fontStyle: "italic" }}>
-                      Nothing here yet — start writing below.
-                    </span>
-                  </div>
-                )}
+                {r.items.length === 0 && <NotepadEmptyHint accent="sage" />}
                 {r.items.map((item) => (
                   <NotepadLineRow
                     key={item.id}
